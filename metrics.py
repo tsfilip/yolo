@@ -25,7 +25,7 @@ class YoloLoss(tf.keras.losses.Loss):
         """
         shape = tf.shape(y_pred)[:-1]
         y_true = tf.cast(y_true, y_pred.dtype)  # cast y_true to float
-        y_pred_coord = utils.process_yolo_output(y_pred[..., 0:4], self.anchors, self.img_size)
+        y_pred_coord, pred_obj, pred_cls = utils.process_yolo_output(y_pred, self.anchors, self.img_size)
         y_pred_coord = tf.reshape(y_pred_coord, (shape[0], -1, 4))  # x0, x1 point coordinates
         y_true_coord = tf.reshape(y_true[..., 0:4], (shape[0], -1, 4))
 
@@ -52,7 +52,7 @@ class YoloLoss(tf.keras.losses.Loss):
 
         strides = self.img_size[0] / shape[1], self.img_size[1] / shape[2]
         true_xy_scaled = tf.math.floormod(y_true_coord[..., :2], strides) / strides
-        pred_xy_scaled = tf.nn.sigmoid(y_pred_coord[..., :2])
+        pred_xy_scaled = tf.nn.sigmoid(y_pred[..., :2])
 
         # bounding box loss
         # reduction sum over [x,y],[w,h] coordinate
@@ -60,14 +60,12 @@ class YoloLoss(tf.keras.losses.Loss):
         wh_loss = self.coord_lambda * obj * tf.reduce_sum(tf.math.square(true_wh_scaled - pred_wh_scaled), axis=-1)
 
         # confidence loss
-        pred_obj = tf.nn.sigmoid(y_pred[..., 4])
         obj_loss = self.obj_lambda * obj * tf.square(obj - pred_obj)
         noobj_loss = self.noobj_lambda * noobj * tf.square(obj - pred_obj)
 
         # classification loss
         cls = y_true[..., 5]  # True labels
         cls = tf.one_hot(tf.cast(cls, dtype=tf.int32), self.n_class)
-        pred_cls = y_pred[..., 5:]
         cls_loss = obj * tf.reduce_sum(tf.square(cls - pred_cls), axis=-1)  # reduce sum over classes
 
         # reduction sum over x, y, anchors

@@ -8,7 +8,7 @@ from tensorflow.keras.layers import Input, Conv2D, UpSampling2D, Lambda, \
 
 
 yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
-                         (59, 119), (116, 90), (156, 198), (373, 326)], np.float32) / 416
+                         (59, 119), (116, 90), (156, 198), (373, 326)], np.float32) / 256
 
 yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
 
@@ -100,6 +100,7 @@ def yolo_v3(input_shape, n_class, anchors=yolo_anchors, anchor_mask=yolo_anchor_
         name: model name
     """
     output_filters = (5 + n_class)   # n_filters = n_anchors * (5 => (x, y, w, h, obj) + n_class)
+    branch_anchors = tf.gather_nd(anchors, anchor_mask[..., tf.newaxis])
     outputs = []
     input = Input(shape=input_shape)
     backbone = darknet53(input_shape, blocks_repetitions=[1, 2, 8, 8, 4], n_outputs=3)
@@ -109,14 +110,12 @@ def yolo_v3(input_shape, n_class, anchors=yolo_anchors, anchor_mask=yolo_anchor_
     for i, output in enumerate(model_outputs[::-1]):
         n_anchors = len(anchor_mask[i])
         yolo_output, branch_output = yolo_branch(output, branch_output, n_anchors * output_filters)
-        if training:
-            output_shape = yolo_output.shape
-            yolo_output = tf.reshape(yolo_output, (-1, output_shape[1], output_shape[2], n_anchors, 5+n_class))
-        else:
-            branch_anchors_index = anchor_mask[i]
-            branch_anchors = tf.gather_nd(anchors, branch_anchors_index[..., tf.newaxis])
-            yolo_output = Lambda(lambda x: process_outputs(x, n_class, branch_anchors, input_shape))(yolo_output)
+        output_shape = yolo_output.shape
+        yolo_output = tf.reshape(yolo_output, (-1, output_shape[1], output_shape[2], n_anchors, 5+n_class))
         outputs.append(yolo_output)
 
-    model = tf.keras.Model(inputs=input, outputs=outputs, name=name)
-    return model
+    if training:
+        return tf.keras.Model(inputs=input, outputs=outputs, name=name)
+
+    yolo_output = Lambda(lambda x: process_outputs(x, n_class, branch_anchors, input_shape))(outputs)
+    return tf.keras.Model(inputs=input, outputs=yolo_output, name=name)

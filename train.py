@@ -14,8 +14,8 @@ FLAGS = flags.FLAGS
 flags.DEFINE_string("train_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/", "Path to training directory")  #TODO none
 flags.DEFINE_string("test_dir", None, "Path to evaluation directory")
 flags.DEFINE_string("logging_dir", "./logs", "Path to log directory for tensorboard and checkpoints")
-flags.DEFINE_integer("width", 320, "Images width")
-flags.DEFINE_integer("height", 320, "Images height")
+flags.DEFINE_integer("width", 256, "Images width")
+flags.DEFINE_integer("height", 256, "Images height")
 flags.DEFINE_integer("n_class", 2, "Number of object classes")
 flags.DEFINE_integer("n_epochs", 150, "Number of object classes")
 flags.DEFINE_integer("batch_size", 3, "Number of object classes")
@@ -54,7 +54,7 @@ def process_batch(images, labels, grid, cell_sizes, anchors):  # , grid, cell_si
     labels_shape = tf.shape(labels)  # (batch_size, n_box)
     yolo_labels = tf.TensorArray(tf.float32, size=n_outputs, dynamic_size=False, infer_shape=False)
 
-    xy_center = (labels[..., 2:4] - labels[..., :2]) / 2 + labels[..., :2]
+    xy_center = (labels[..., 2:4] + labels[..., :2]) / 2
 
     for i in tf.range(n_outputs):
         n_anchors = tf.shape(anchors[i])[0]
@@ -98,11 +98,11 @@ def process_batch(images, labels, grid, cell_sizes, anchors):  # , grid, cell_si
 
 
 def create_callbacks(log_dir, n_class, anchors, image_shape, val_images, val_labels):
-    process_fn = partial(process_outputs, n_class=n_class, image_shape=image_shape)
+    process_fn = partial(process_outputs, n_class=n_class, anchors=anchors, image_shape=image_shape)
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=log_dir),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', mode='min', patience=4, factor=0.1, min_lr=1e-6),
-        TbResultsVisualization(log_dir, val_images, val_labels, anchors, process_fn)
+        TbResultsVisualization(log_dir, val_images, val_labels, process_fn)
     ]
     return callbacks
 
@@ -112,6 +112,7 @@ def main(argv):
     yolo = model.yolo_v3(input_shape, n_class=FLAGS.n_class, training=True)
 
     grid = tf.Variable([output.shape[1] for output in yolo.outputs], dtype=tf.int32)
+
     cell_sizes = tf.Variable(input_shape[:2], dtype=tf.float32) / tf.cast(grid[..., tf.newaxis], dtype=tf.float32)
     anchors = tf.gather_nd(model.yolo_anchors, model.yolo_anchor_masks[..., tf.newaxis])
     losses = [YoloLoss(input_shape, tf.constant(FLAGS.n_class, tf.int32), anchors[i],
@@ -131,7 +132,7 @@ def main(argv):
     dataset = dataset.map(lambda img, label: process_batch(img, label, tf.Variable(grid), cell_sizes, tf.Variable(anchors))).prefetch(tf.data.AUTOTUNE)
 
     optimizer = tf.keras.optimizers.Adam(lr=FLAGS.learning_rate)
-    yolo.compile(optimizer=optimizer, loss=losses) #run_eagerly=True
+    yolo.compile(optimizer=optimizer, loss=losses, run_eagerly=True) #run_eagerly=True
     yolo.fit(dataset, epochs=FLAGS.n_epochs, callbacks=callbacks)
 
 

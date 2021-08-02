@@ -64,7 +64,11 @@ def process_yolo_output(preds, anchors, image_shape):
                                       (1, preds_shape[0], preds_shape[1], preds_shape[2], 2)), dtype=tf.float32)
     pred_wh = anchors * tf.math.exp(preds[..., 2:4])
 
-    return tf.concat((center_xy, pred_wh), axis=-1)    # (batch, x, y, n_anchors, x_center+y_center+width+height)
+    obj = tf.nn.sigmoid(preds[..., 4])
+    cls = tf.nn.sigmoid(preds[..., 5:])
+
+    # (batch, x, y, n_anchors, x_center+y_center+width+height)
+    return tf.concat((center_xy, pred_wh), axis=-1), obj, cls
 
 
 def coordinates_to_points(coordinate):
@@ -76,8 +80,8 @@ def coordinates_to_points(coordinate):
     """
     center_xy, box_wh = tf.split(coordinate, (2, 2), axis=-1)
 
-    xy0 = center_xy - box_wh
-    xy1 = center_xy + box_wh
+    xy0 = center_xy - box_wh / 2
+    xy1 = center_xy + box_wh / 2
     return tf.concat([xy0, xy1], axis=-1)
 
 
@@ -90,8 +94,8 @@ def points_to_coordinates(points):
     """
     x0, x1 = tf.split(points, (2, 2), axis=-1)
 
-    box_wh = (x1 - x0) / 2
-    xy_center = box_wh + x0
+    box_wh = x1 - x0
+    xy_center = (x0 + x1) / 2
 
     return tf.concat([xy_center, box_wh], axis=-1)
 
@@ -99,36 +103,43 @@ def points_to_coordinates(points):
 def process_outputs(preds, n_class, anchors, image_shape, threshold=0.5, score_threshold=0.5, max_boxes=2000):
     """"
     Args:
-        preds: prediction from object detection model (batch_dimension, x, y, n_anchors*(bx+by+bw+bh+obj+n_class)),
+        preds: prediction from object detection model (n_outputs, batch_dimension, x, y, n_anchors*(bx+by+bw+bh+obj+n_class)),
         n_class: number of classes,
-        anchors: predefined anchors shape: [[w,h],[w,h],[w,h]],
+        anchors: predefined anchors shape: (n_outputs, n_anchors, 2 (w, h)),
         image_shape: size of original image for rescaling bounding box
         threshold: threshold for NMS,
         max_boxes: maximum number of boxes
     Returns:
         The most accurate predicted bounding box.
     """
-    n_anchors = tf.shape(anchors)[0]
-    shape = tf.shape(preds)
-    n_boxes = tf.reduce_prod([shape[1], shape[2], n_anchors])
+    yolo_scores = []
+    yolo_boxes = []
 
-    # reshape preds to (batch, x, y, n_anchors, bx+by+bw+bh+obj+n_class)
-    preds = tf.reshape(preds, [-1, shape[1], shape[2], n_anchors, shape[-1] // n_anchors])
+    n_anchors = tf.shape(anchors)
+    for i in tf.range(n_anchors[0]):
+        shape = tf.shape(preds[i])
+        n_boxes = tf.reduce_prod([shape[1], shape[2], n_anchors[1]])
 
-    bbox = preds[..., :4]
-    bbox = process_yolo_output(bbox, anchors, image_shape)
-    bbox = coordinates_to_points(bbox)                     # (xy_center, width, height) => [x0, x1]
+        bbox, obj, scores = process_yolo_output(preds[i], anchors[i], image_shape)
+        bbox = coordinates_to_points(bbox)                     # (xy_center, width, height) => [x0, x1]
 
-    bbox = tf.reshape(bbox, (-1, n_boxes, 1, 4))           # reshape to batch, n_boxes, 1, 4(y0, x0, y1, x1)
+        bbox = tf.reshape(bbox, (-1, n_boxes, 1, 4))           # reshape to batch, n_boxes, 1, 4(y0, x0, y1, x1)
 
-    obj = tf.nn.sigmoid(preds[..., 4])
-    scores = tf.nn.sigmoid(preds[..., 5:])
-    scores = obj[..., tf.newaxis] * scores                  # multiply obj with class scores
-    scores = tf.reshape(scores, (-1, n_boxes, n_class))    # reshape to batch, n_boxes, n_class
+        scores = obj[..., tf.newaxis] * scores                  # multiply obj with class scores
+        scores = tf.reshape(scores, (-1, n_boxes, n_class))    # reshape to batch, n_boxes, n_class
 
-    bbox = tf.round(bbox)
-    box_index = tf.image.combined_non_max_suppression(bbox, scores, iou_threshold=threshold, max_total_size=max_boxes,
-                                                      score_threshold=score_threshold, max_output_size_per_class=10,
+        bbox = tf.round(bbox)
+        yolo_scores.append(scores)
+        yolo_boxes.append(bbox)
+
+    yolo_scores = tf.concat(yolo_scores, axis=1)
+    yolo_boxes = tf.concat(yolo_boxes, axis=1)
+
+    box_index = tf.image.combined_non_max_suppression(yolo_boxes, yolo_scores,
+                                                      iou_threshold=threshold,
+                                                      max_total_size=max_boxes,
+                                                      score_threshold=score_threshold,
+                                                      max_output_size_per_class=10,
                                                       clip_boxes=False)
 
     return box_index
@@ -142,11 +153,10 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
                  img_test: batch of images to display,
                  test_labels: bround true bounding box
     """
-    def __init__(self, log_dir, img_test, test_labels, anchors, process_fn, n_epoch=1):
+    def __init__(self, log_dir, img_test, test_labels, process_fn, n_epoch=1):
         self.log_dir = log_dir
         self.img_test = img_test
         self.n_epoch = n_epoch
-        self.anchors = anchors
         self.process_fn = process_fn
         self.writer = tf.summary.create_file_writer(log_dir)
         n_images = img_test.shape[0]
@@ -185,13 +195,8 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
             self.axs[1, i].imshow(img)
 
         preds = self.model(self.img_test)
-        losses = tf.zeros_like(3, dtype=tf.float32)
-
-        for i, pred in enumerate(preds):
-            pred_shape = tf.shape(pred)
-            pred = tf.reshape(pred, (pred_shape[0], pred_shape[1], pred_shape[2], -1))
-            pred = self.process_fn(pred, anchors=self.anchors[i])
-            self.plot_rectangle(pred)
+        preds = self.process_fn(preds)
+        self.plot_rectangle(preds)
 
         buf = io.BytesIO()
         plt.savefig(buf, format='png')
@@ -204,8 +209,9 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
         rec_coord = pred[0]
         for img, n_rec in enumerate(pred[3]):   # take number of valid rectangles for each image
             for j in range(n_rec):              # for each valid rectangle
-                rec_w = rec_coord[img, j, 2] - rec_coord[img, j, 0]
-                rec_h = rec_coord[img, j, 3] - rec_coord[img, j, 1]
-                rect = patches.Rectangle((rec_coord[img, j, 0], rec_coord[img, j, 1]), rec_w, rec_h,
-                                         lw=1, ec='r', fc='none')
+                rec_w = rec_coord[img, j, 2]
+                rec_h = rec_coord[img, j, 3]
+                center_x = rec_coord[img, j, 0] - rec_w / 2
+                center_y = rec_coord[img, j, 1] - rec_h / 2
+                rect = patches.Rectangle((center_x, center_y), rec_w, rec_h, lw=1, ec='r', fc='none')
                 self.axs[1, img].add_patch(rect)
