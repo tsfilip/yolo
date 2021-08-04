@@ -18,15 +18,15 @@ flags.DEFINE_integer("width", 256, "Images width")
 flags.DEFINE_integer("height", 256, "Images height")
 flags.DEFINE_integer("n_class", 2, "Number of object classes")
 flags.DEFINE_integer("n_epochs", 150, "Number of object classes")
-flags.DEFINE_integer("batch_size", 3, "Number of object classes")
-flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
+flags.DEFINE_integer("batch_size", 5, "Number of object classes")
+flags.DEFINE_float("learning_rate", 1e-4, "Learning rate")
 
 
 def read_sample(line):
     """Return image and labels for object detection.
     Retrun:
     image: input image for yolo model,
-    labels: label for each yolo detection head
+    labels: label for each yolo detection head (bounding box in pixel location not in image relative position)
     """
     line = tf.strings.split(line)
     image = tf.io.read_file(FLAGS.train_dir + line[0])
@@ -36,14 +36,13 @@ def read_sample(line):
     image = tf.image.resize(image, [FLAGS.width, FLAGS.height])
     labels = tf.strings.to_number(line[1:], tf.float32)
 
-    # transform bounding box coord = coord * new_size / old_size
-    labels *= tf.cast(tf.tile([FLAGS.width, FLAGS.height], [2]), tf.float32)
+    # transform bounding box coord to image relative position
     labels /= tf.cast(tf.tile([image_shape[0], image_shape[1]], [2]), dtype=tf.float32)
     labels = labels[tf.newaxis, ...]
     return image, labels  # labels in shape n_box, 4
 
 
-def process_batch(images, labels, grid, cell_sizes, anchors):  # , grid, cell_sizes, anchors
+def process_batch(images, labels, grid, anchors):
     """Map function for batch preprocessing. Convert bounding box labels to yolo output shape.
     Args:
         labels: ground true labels (batch_size, n_box, x0, y0, x1, y1),
@@ -60,9 +59,10 @@ def process_batch(images, labels, grid, cell_sizes, anchors):  # , grid, cell_si
         n_anchors = tf.shape(anchors[i])[0]
         # Find bounding box center xy position
 
-        cell_sizes_broad = tf.broadcast_to(cell_sizes[i][tf.newaxis, tf.newaxis, ...], tf.shape(xy_center))
+        cell_sizes = tf.cast(1 / grid[i], tf.float32)
+        cell_sizes = tf.broadcast_to(cell_sizes[tf.newaxis, tf.newaxis, ...], tf.shape(xy_center))
         # Cell responsible for predictions
-        cell_coord = tf.cast(xy_center / cell_sizes_broad, dtype=tf.int32)
+        cell_coord = tf.cast(xy_center / cell_sizes, dtype=tf.int32)
 
         # Set box point to x=0, y=0 for iou calculation
         labels_centered = tf.zeros((labels_shape[0], labels_shape[1], 2))
@@ -97,8 +97,8 @@ def process_batch(images, labels, grid, cell_sizes, anchors):  # , grid, cell_si
     return images, (yolo_labels.read(0), yolo_labels.read(1), yolo_labels.read(2))
 
 
-def create_callbacks(log_dir, n_class, anchors, image_shape, val_images, val_labels):
-    process_fn = partial(process_outputs, n_class=n_class, anchors=anchors, image_shape=image_shape)
+def create_callbacks(log_dir, n_class, anchors, val_images, val_labels):
+    process_fn = partial(process_outputs, n_class=n_class, anchors=anchors)
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=log_dir),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', mode='min', patience=4, factor=0.1, min_lr=1e-6),
@@ -109,12 +109,11 @@ def create_callbacks(log_dir, n_class, anchors, image_shape, val_images, val_lab
 
 def main(argv):
     input_shape = [FLAGS.width, FLAGS.height, 3]
-    yolo = model.yolo_v3(input_shape, n_class=FLAGS.n_class, training=True)
+    anchors = model.yolo_anchors / FLAGS.width
+    anchors = tf.gather_nd(anchors, model.yolo_anchor_masks[..., tf.newaxis])
+    yolo = model.yolo_v3(input_shape, anchors=anchors, n_class=FLAGS.n_class, training=True)
 
     grid = tf.Variable([output.shape[1] for output in yolo.outputs], dtype=tf.int32)
-
-    cell_sizes = tf.Variable(input_shape[:2], dtype=tf.float32) / tf.cast(grid[..., tf.newaxis], dtype=tf.float32)
-    anchors = tf.gather_nd(model.yolo_anchors, model.yolo_anchor_masks[..., tf.newaxis])
     losses = [YoloLoss(input_shape, tf.constant(FLAGS.n_class, tf.int32), anchors[i],
                        name=f"head_{i+1}_loss") for i in range(len(yolo.outputs))]
 
@@ -125,11 +124,11 @@ def main(argv):
         os.makedirs(FLAGS.logging_dir)
 
     val_images, val_labels = next(dataset.batch(5).take(1).as_numpy_iterator())
-    callbacks = create_callbacks(FLAGS.logging_dir, FLAGS.n_class, anchors, input_shape, val_images, val_labels)
+    callbacks = create_callbacks(FLAGS.logging_dir, FLAGS.n_class, anchors, val_images, val_labels)
     del val_images, val_labels
 
     dataset = dataset.batch(FLAGS.batch_size)
-    dataset = dataset.map(lambda img, label: process_batch(img, label, tf.Variable(grid), cell_sizes, tf.Variable(anchors))).prefetch(tf.data.AUTOTUNE)
+    dataset = dataset.map(lambda img, label: process_batch(img, label, tf.Variable(grid), tf.Variable(anchors))).prefetch(tf.data.AUTOTUNE)
 
     optimizer = tf.keras.optimizers.Adam(lr=FLAGS.learning_rate)
     yolo.compile(optimizer=optimizer, loss=losses, run_eagerly=True) #run_eagerly=True

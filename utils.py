@@ -37,7 +37,7 @@ def broadcasted_iou(preds, bbox):
     return iou
 
 
-def process_yolo_output(preds, anchors, image_shape):
+def process_yolo_output(preds, anchors):
     """Transform yolo predictions to bounding box
     Args:
         preds: predicted bounding box (batch, x, y, n_anchors, bx+by+bh+bw)
@@ -47,7 +47,6 @@ def process_yolo_output(preds, anchors, image_shape):
         bounding box coordinates [x0, x1]
     """
     preds_shape = tf.shape(preds)[1:-1]  # x, y, n_anchors
-    strides = image_shape[0] / preds_shape[0], image_shape[1] / preds_shape[1]
 
     delta_x, delta_y = tf.meshgrid(tf.range(preds_shape[0]), tf.range(preds_shape[1]))
     delta_xy = tf.concat([delta_x[..., tf.newaxis], delta_y[..., tf.newaxis]], axis=-1)
@@ -56,8 +55,8 @@ def process_yolo_output(preds, anchors, image_shape):
                                (1, preds_shape[0], preds_shape[1], preds_shape[2], 2))
     delta_xy = tf.cast(delta_xy, dtype=preds.dtype)
 
-    # Center of the predicted bounding box
-    center_xy = (tf.nn.sigmoid(preds[..., 0:2]) + delta_xy) * strides
+    # Relative position of the predicted bounding box center point
+    center_xy = (tf.nn.sigmoid(preds[..., 0:2]) + delta_xy) / tf.cast(preds_shape[0], tf.float32)
 
     # Broadcast anchors to (x,y,n_anchors, 2(width, height))
     anchors = tf.cast(tf.broadcast_to(anchors[tf.newaxis, tf.newaxis, tf.newaxis, ...],
@@ -100,7 +99,7 @@ def points_to_coordinates(points):
     return tf.concat([xy_center, box_wh], axis=-1)
 
 
-def process_outputs(preds, n_class, anchors, image_shape, threshold=0.5, score_threshold=0.5, max_boxes=2000):
+def process_outputs(preds, n_class, anchors, threshold=0.5, score_threshold=0.5, max_boxes=2000):
     """"
     Args:
         preds: prediction from object detection model (n_outputs, batch_dimension, x, y, n_anchors*(bx+by+bw+bh+obj+n_class)),
@@ -120,7 +119,10 @@ def process_outputs(preds, n_class, anchors, image_shape, threshold=0.5, score_t
         shape = tf.shape(preds[i])
         n_boxes = tf.reduce_prod([shape[1], shape[2], n_anchors[1]])
 
-        bbox, obj, scores = process_yolo_output(preds[i], anchors[i], image_shape)
+        bbox, obj, scores = process_yolo_output(preds[i], anchors[i])
+        bbox_xy, bbox_wh = tf.split(bbox, (2, 2), -1)
+
+        bbox = tf.concat([bbox_xy, bbox_wh], axis=-1)
         bbox = coordinates_to_points(bbox)                     # (xy_center, width, height) => [x0, x1]
 
         bbox = tf.reshape(bbox, (-1, n_boxes, 1, 4))           # reshape to batch, n_boxes, 1, 4(y0, x0, y1, x1)
@@ -128,7 +130,6 @@ def process_outputs(preds, n_class, anchors, image_shape, threshold=0.5, score_t
         scores = obj[..., tf.newaxis] * scores                  # multiply obj with class scores
         scores = tf.reshape(scores, (-1, n_boxes, n_class))    # reshape to batch, n_boxes, n_class
 
-        bbox = tf.round(bbox)
         yolo_scores.append(scores)
         yolo_boxes.append(bbox)
 
@@ -139,7 +140,7 @@ def process_outputs(preds, n_class, anchors, image_shape, threshold=0.5, score_t
                                                       iou_threshold=threshold,
                                                       max_total_size=max_boxes,
                                                       score_threshold=score_threshold,
-                                                      max_output_size_per_class=10,
+                                                      max_output_size_per_class=100,
                                                       clip_boxes=False)
 
     return box_index
@@ -159,12 +160,12 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
         self.n_epoch = n_epoch
         self.process_fn = process_fn
         self.writer = tf.summary.create_file_writer(log_dir)
-        n_images = img_test.shape[0]
+        self.img_shape = tf.shape(img_test)
         super(TbResultsVisualization, self).__init__()
 
         # initialize matplotlib figure with original images
-        self.fig = plt.figure(figsize=(12, max(12 // n_images * 2, 1)))
-        gs = self.fig.add_gridspec(2, n_images, hspace=0.2, wspace=0.1)
+        self.fig = plt.figure(figsize=(12, max(12 // self.img_shape[0] * 2, 1)))
+        gs = self.fig.add_gridspec(2, self.img_shape[0].numpy(), hspace=0.2, wspace=0.1)
         self.axs = gs.subplots(sharex='col', sharey='row')
         for i, img in enumerate(self.img_test):            # Plot validation images
             self.axs[0, i].set_title('Ground true')
@@ -176,6 +177,7 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
 
         for i, image_gts in enumerate(test_labels):   # Plot ground true rectangles for each images and gt
             for gt in image_gts:
+                gt = gt * tf.cast(tf.tile(self.img_shape[1:3], [2]), tf.float32)
                 rect = patches.Rectangle((gt[0], gt[1]), gt[2] - gt[0], gt[3] - gt[1], lw=1, ec='r', fc='none')
                 self.axs[0, i].add_patch(rect)
 
@@ -203,15 +205,20 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
         image = tf.image.decode_png(buf.getvalue(), channels=3)
         image = tf.expand_dims(image, 0)
         with self.writer.as_default():
+            for i, loss in enumerate(self.model.loss):
+                tf.summary.scalar(f"XY loss{i}", loss.xy_loss, step=epoch)
+                tf.summary.scalar(f"WH loss{i}", loss.wh_loss, step=epoch)
+
             tf.summary.image("Validation test", image, step=epoch)
 
     def plot_rectangle(self, pred):
-        rec_coord = pred[0]
+        rec_coord = pred[0] * tf.cast(tf.tile([self.img_shape[1], self.img_shape[2]], [2]), tf.float32)
+        rec_coord = rec_coord[..., :4]
+        x0 = rec_coord[..., :2]
+        wh = rec_coord[..., 2:4] - x0
+
         for img, n_rec in enumerate(pred[3]):   # take number of valid rectangles for each image
             for j in range(n_rec):              # for each valid rectangle
-                rec_w = rec_coord[img, j, 2]
-                rec_h = rec_coord[img, j, 3]
-                center_x = rec_coord[img, j, 0] - rec_w / 2
-                center_y = rec_coord[img, j, 1] - rec_h / 2
-                rect = patches.Rectangle((center_x, center_y), rec_w, rec_h, lw=1, ec='r', fc='none')
+                rect = patches.Rectangle((x0[img, j, 0], x0[img, j, 1]),
+                                         wh[img, j, 0], wh[img, j, 1], lw=1, ec='r', fc='none')
                 self.axs[1, img].add_patch(rect)

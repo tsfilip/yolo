@@ -8,7 +8,7 @@ from tensorflow.keras.layers import Input, Conv2D, UpSampling2D, Lambda, \
 
 
 yolo_anchors = np.array([(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),
-                         (59, 119), (116, 90), (156, 198), (373, 326)], np.float32) / 256
+                         (59, 119), (116, 90), (156, 198), (373, 326)], np.float32)
 
 yolo_anchor_masks = np.array([[6, 7, 8], [3, 4, 5], [0, 1, 2]])
 
@@ -89,18 +89,17 @@ def yolo_branch(cnn_input, branch_input, n_filters):
     return x, cnn_input
 
 
-def yolo_v3(input_shape, n_class, anchors=yolo_anchors, anchor_mask=yolo_anchor_masks, training=False, name="yolo_v3"):
+def yolo_v3(input_shape, n_class, anchors, anchor_mask=yolo_anchor_masks, training=False, name="yolo_v3"):
     """Crete and return yolo v3 model.
     Args:
         input_shape: size of input images,
-        anchors: predefined anchors for each yolo branch (n_anchors, 2[width, height]),
+        anchors: predefined anchors for each yolo branch (n_outputs, n_anchors, 2[width, height]),
         anchor_mask: mask for each branch anchors (n_branches, n_anchors),
         n_class: number of classes,
         training: flag if true convert yolo output to coordinate and perform nms,
         name: model name
     """
     output_filters = (5 + n_class)   # n_filters = n_anchors * (5 => (x, y, w, h, obj) + n_class)
-    branch_anchors = tf.gather_nd(anchors, anchor_mask[..., tf.newaxis])
     outputs = []
     input = Input(shape=input_shape)
     backbone = darknet53(input_shape, blocks_repetitions=[1, 2, 8, 8, 4], n_outputs=3)
@@ -117,5 +116,5 @@ def yolo_v3(input_shape, n_class, anchors=yolo_anchors, anchor_mask=yolo_anchor_
     if training:
         return tf.keras.Model(inputs=input, outputs=outputs, name=name)
 
-    yolo_output = Lambda(lambda x: process_outputs(x, n_class, branch_anchors, input_shape))(outputs)
+    yolo_output = Lambda(lambda x: process_outputs(x, n_class, anchors))(outputs)
     return tf.keras.Model(inputs=input, outputs=yolo_output, name=name)
