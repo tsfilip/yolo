@@ -13,27 +13,25 @@ def broadcasted_iou(preds, bbox):
         bbox: ground true bounding box (..., x0+y0+x1+y1)
     """
     preds = tf.expand_dims(preds, -2)
-    bbox = tf.expand_dims(bbox, 1)
+    bbox = tf.expand_dims(bbox, 0)
     # Find broadcast shape
     broadcast_shape = tf.broadcast_dynamic_shape(tf.shape(preds), tf.shape(bbox))
 
     preds = tf.broadcast_to(preds, broadcast_shape)
     bbox = tf.broadcast_to(bbox, broadcast_shape)
+
     # find intersection rectangle
-    x0 = tf.math.maximum(preds[..., 0], bbox[..., 0])
-    y0 = tf.math.maximum(preds[..., 1], bbox[..., 1])
-    x1 = tf.math.minimum(preds[..., 2], bbox[..., 2])
-    y1 = tf.math.minimum(preds[..., 3], bbox[..., 3])
-
     # if x0 < x1 and y0 < y1 then they not overlap
-    interst = tf.logical_and(tf.math.less(x0, x1), tf.math.less(y0, y1))
+    intersection_width = tf.maximum(tf.minimum(preds[..., 2], bbox[..., 2]) -
+                       tf.maximum(preds[..., 0], bbox[..., 0]), 0)
+    intersection_height = tf.maximum(tf.minimum(preds[..., 3], bbox[..., 3]) -
+                       tf.maximum(preds[..., 1], bbox[..., 1]), 0)
 
-    intersection = ((x1 - x0) * (y1 - y0))
+    intersection = intersection_width * intersection_height
     preds_content = (preds[..., 2] - preds[..., 0]) * (preds[..., 3] - preds[..., 1])
     bbox_content = (bbox[..., 2] - bbox[..., 0]) * (bbox[..., 3] - bbox[..., 1])
-
     iou = intersection / (preds_content + bbox_content - intersection)
-    iou = iou * tf.cast(interst, dtype=iou.dtype)
+
     return iou
 
 
