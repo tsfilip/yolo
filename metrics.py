@@ -27,7 +27,8 @@ class YoloLoss(tf.keras.losses.Loss):
         y_true_coord, obj, y_class = tf.split(y_true, (4, 1, 1), axis=-1)
 
         # calculate iou between y_true and y_pred
-        true_box_flat = tf.boolean_mask(y_true_coord, tf.cast(tf.squeeze(obj, axis=-1), tf.bool))
+        obj = tf.reshape(obj, shape)
+        true_box_flat = tf.boolean_mask(y_true_coord, tf.cast(obj, tf.bool))
         ious = utils.broadcasted_iou(utils.coordinates_to_points(y_pred_coord), true_box_flat)
 
         noobj = tf.math.greater(ious, self.threshold)
@@ -75,8 +76,6 @@ class YoloLoss(tf.keras.losses.Loss):
         obj_loss = tf.reduce_sum(obj_loss, [1, 2, 3])
         noobj_loss = tf.reduce_sum(noobj_loss, [1, 2, 3])
         cls_loss = tf.reduce_sum(cls_loss, [1, 2, 3])
-        self.xy_loss = tf.reduce_mean(xy_loss)
-        self.wh_loss = tf.reduce_mean(wh_loss)
 
         return tf.reduce_mean(xy_loss + wh_loss + obj_loss + noobj_loss + cls_loss)
 

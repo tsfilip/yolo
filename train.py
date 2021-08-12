@@ -11,15 +11,16 @@ from functools import partial
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("train_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/train/", "Path to training directory")  #TODO none
-flags.DEFINE_string("test_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/test/", "Path to test directory")  #TODO none
+flags.DEFINE_string("test_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/test/", "Path to test directory")
 flags.DEFINE_string("logging_dir", "./logs", "Path to log directory for tensorboard and checkpoints")
+flags.DEFINE_string("checkpoint", "./ckpt", "Path to checkpoint directory")
 flags.DEFINE_integer("width", 256, "Images width")
 flags.DEFINE_integer("height", 256, "Images height")
 flags.DEFINE_integer("n_class", 3, "Number of object classes")
-flags.DEFINE_integer("n_epochs", 150, "Number of object classes")
-flags.DEFINE_integer("batch_size", 5, "Number of object classes")
+flags.DEFINE_integer("n_epochs", 30, "Number of object classes")
+flags.DEFINE_integer("batch_size", 10, "Number of object classes")
 flags.DEFINE_integer("max_boxes", 10, "Maximum number of boxes for image")
-flags.DEFINE_float("learning_rate", 1e-4, "Learning rate")
+flags.DEFINE_float("learning_rate", 1e-3, "Learning rate")
 
 
 def read_sample(example_proto, path):
@@ -112,10 +113,12 @@ def process_batch(images, labels, cls, grid, anchors):
 
 
 def create_callbacks(log_dir, n_class, anchors, val_images, val_labels):
+    checkpoint_dir = os.path.join(FLAGS.checkpoint, 'cp-{epoch:08d}.ckpt')
     process_fn = partial(process_outputs, n_class=n_class, anchors=anchors)
     callbacks = [
         tf.keras.callbacks.TensorBoard(log_dir=log_dir),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='loss', mode='min', patience=4, factor=0.1, min_lr=1e-6),
+        tf.keras.callbacks.ModelCheckpoint(checkpoint_dir, mode='min', period=5, save_weights_only=True),
         TbResultsVisualization(log_dir, val_images, val_labels, process_fn)
     ]
     return callbacks
@@ -152,7 +155,10 @@ def main(argv):
     test_ds = test_ds.map(lambda img, label, cls: process_batch(img, label, cls, tf.Variable(grid), tf.Variable(anchors))).prefetch(tf.data.AUTOTUNE)
 
     optimizer = tf.keras.optimizers.Adam(lr=FLAGS.learning_rate)
-    yolo.compile(optimizer=optimizer, loss=losses, run_eagerly=True)
+    yolo.compile(optimizer=optimizer, loss=losses, run_eagerly=False)
+    checkpoint = tf.train.Checkpoint(yolo)
+    checkpoint.restore(tf.train.latest_checkpoint(FLAGS.checkpoint))
+
     yolo.fit(train_ds, validation_data=test_ds, epochs=FLAGS.n_epochs, callbacks=callbacks)
 
 

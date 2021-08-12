@@ -203,10 +203,6 @@ class TbResultsVisualization(tf.keras.callbacks.Callback):
         image = tf.image.decode_png(buf.getvalue(), channels=3)
         image = tf.expand_dims(image, 0)
         with self.writer.as_default():
-            for i, loss in enumerate(self.model.loss):
-                tf.summary.scalar(f"XY loss{i}", loss.xy_loss, step=epoch)
-                tf.summary.scalar(f"WH loss{i}", loss.wh_loss, step=epoch)
-
             tf.summary.image("Validation test", image, step=epoch)
 
     def plot_rectangle(self, pred):
