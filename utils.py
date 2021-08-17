@@ -97,6 +97,7 @@ def points_to_coordinates(points):
     return tf.concat([xy_center, box_wh], axis=-1)
 
 
+@tf.function
 def process_outputs(preds, n_class, anchors, threshold=0.5, score_threshold=0.5, max_boxes=2000):
     """"
     Args:
@@ -113,11 +114,12 @@ def process_outputs(preds, n_class, anchors, threshold=0.5, score_threshold=0.5,
     yolo_boxes = []
 
     n_anchors = tf.shape(anchors)
-    for i in tf.range(n_anchors[0]):
-        shape = tf.shape(preds[i])
+    for i, pred in enumerate(preds):
+        anchor = anchors[i]
+        shape = tf.shape(pred)
         n_boxes = tf.reduce_prod([shape[1], shape[2], n_anchors[1]])
 
-        bbox, obj, scores = process_yolo_output(preds[i], anchors[i])
+        bbox, obj, scores = process_yolo_output(pred, anchor)
         bbox_xy, bbox_wh = tf.split(bbox, (2, 2), -1)
 
         bbox = tf.concat([bbox_xy, bbox_wh], axis=-1)

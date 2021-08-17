@@ -68,7 +68,7 @@ def convolutional_set(input, n_filters):
     return x
 
 
-def yolo_branch(cnn_input, branch_input, n_filters):
+def yolo_branch(cnn_input, branch_input, model_name):
     """
     Single branch of yolo model architecture.
     Branch concat the cnn_input with branch_input if exist and then process them through cnn layers.
@@ -77,16 +77,27 @@ def yolo_branch(cnn_input, branch_input, n_filters):
     branch_input: input from another down sample branch,
     n_filters: number of filters for output cnn (n_anchors * 5 + number of class)
     """
+    input_shape = cnn_input.shape[1:]
     if branch_input is not None:
-        branch_input = detection_layer(branch_input, branch_input.shape[-1] // 2, kernel_size=(1, 1))
-        branch_input = UpSampling2D(size=(2, 2))(branch_input)
-        cnn_input = Concatenate(axis=-1)([cnn_input, branch_input])
+        inputs = Input(input_shape), Input(branch_input.shape[1:])
+        x = detection_layer(inputs[1], branch_input.shape[-1] // 2, kernel_size=(1, 1))
+        x = UpSampling2D(size=(2, 2))(x)
+        x = Concatenate(axis=-1)([x, inputs[0]])
+        cnn_input = [cnn_input, branch_input]
+    else:
+        x = inputs = Input(input_shape)
 
-    cnn_input = convolutional_set(cnn_input, cnn_input.shape[-1])
+    x = convolutional_set(x, input_shape[-1])
+    return tf.keras.Model(inputs=inputs, outputs=x, name=model_name)(cnn_input)
 
-    x = detection_layer(cnn_input, n_filters=cnn_input.shape[-1], kernel_size=(3, 3))
-    x = Conv2D(n_filters, kernel_size=(1, 1), kernel_regularizer=l2(5e-5))(x)  # (x_center + y_center + width + height + obj + n_class)
-    return x, cnn_input
+
+def yolo_output(cnn_input, n_anchors, output_filters, model_name):
+    shape = cnn_input.shape[1:]
+    input = Input(shape)
+    x = detection_layer(input, n_filters=shape[-1] * 2, kernel_size=(3, 3))
+    x = Conv2D(n_anchors * output_filters, kernel_size=(1, 1), kernel_regularizer=l2(5e-5))(x)  # (x_center + y_center + width + height + obj + n_class)
+    output = Lambda(lambda output: tf.reshape(output, (-1, shape[0], shape[1], n_anchors, output_filters)))(x)
+    return tf.keras.Model(inputs=input, outputs=output, name=model_name)(cnn_input)
 
 
 def yolo_v3(input_shape, n_class, anchors, anchor_mask=yolo_anchor_masks, training=False, name="yolo_v3"):
@@ -104,17 +115,15 @@ def yolo_v3(input_shape, n_class, anchors, anchor_mask=yolo_anchor_masks, traini
     input = Input(shape=input_shape)
     backbone = darknet53(input_shape, blocks_repetitions=[1, 2, 8, 8, 4], n_outputs=3)
     model_outputs = backbone(input)
-
     branch_output = None
     for i, output in enumerate(model_outputs[::-1]):
         n_anchors = len(anchor_mask[i])
-        yolo_output, branch_output = yolo_branch(output, branch_output, n_anchors * output_filters)
-        output_shape = yolo_output.shape
-        yolo_output = tf.reshape(yolo_output, (-1, output_shape[1], output_shape[2], n_anchors, 5+n_class))
-        outputs.append(yolo_output)
+        branch_output = yolo_branch(output, branch_output, f"yolo_conv_{i}")  #n_anchors * output_filters
+        final_output = yolo_output(branch_output, n_anchors, output_filters, f"yolo_output_{i}")
+        outputs.append(final_output)
 
     if training:
         return tf.keras.Model(inputs=input, outputs=outputs, name=name)
 
-    yolo_output = Lambda(lambda x: process_outputs(x, n_class, anchors))(outputs)
-    return tf.keras.Model(inputs=input, outputs=yolo_output, name=name)
+    output = Lambda(lambda x: process_outputs(x, n_class, anchors))(outputs)
+    return tf.keras.Model(inputs=input, outputs=output, name=name)
