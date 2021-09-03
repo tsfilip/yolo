@@ -126,11 +126,11 @@ def create_callbacks(log_dir, n_class, anchors, val_images, val_labels):
 
 def main(argv):
     input_shape = [FLAGS.width, FLAGS.height, 3]
-    anchors = model.yolo_anchors / FLAGS.width
-    anchors = tf.gather_nd(anchors, model.yolo_anchor_masks[..., tf.newaxis])
-    yolo = model.yolo_v3(input_shape, anchors=anchors, n_class=FLAGS.n_class, training=True)
+    yolo = model.yolo_v3(input_shape, n_class=FLAGS.n_class, training=True)
 
     grid = tf.Variable([output.shape[1] for output in yolo.outputs], dtype=tf.int32)
+    anchors = model.yolo_anchors / FLAGS.width
+    anchors = tf.gather_nd(anchors, model.yolo_anchor_masks[..., tf.newaxis])
     losses = [YoloLoss(input_shape, tf.constant(FLAGS.n_class, tf.int32), anchors[i],
                        name=f"head_{i+1}_loss") for i in range(len(yolo.outputs))]
 

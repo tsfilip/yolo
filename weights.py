@@ -68,7 +68,7 @@ def load_darknet_weights(model, weights_file):
 
 
 def main(_argv):
-    width = 412
+    width = 416
     anchors = yolo_anchors / width
     anchors = tf.gather_nd(anchors, yolo_anchor_masks[..., tf.newaxis])
     yolo = yolo_v3([width, width, 3], n_class=80, anchors=anchors)
