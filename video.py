@@ -1,13 +1,13 @@
 import cv2
 import tensorflow as tf
 
-
 from absl import app, flags, logging
-from model import yolo_v3, yolo_anchors, yolo_anchor_masks
+from model import yolo_v3
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string("video_file", "./Driving Downtown - Vancouver 4K - Canada.mp4", "Path to video file.")
+flags.DEFINE_string("video_file", None, "Path to video file.")
 flags.DEFINE_string("class_names", "./coco.names", "Path to file with class names.")
+flags.DEFINE_string("weights_path", "./weights/yolov3.tf", "Path to saved Yolo weights.")
 flags.DEFINE_integer("width", 416, "Reshaped video width.")
 flags.DEFINE_integer("height", 416, "Reshaped video height.")
 
@@ -23,13 +23,13 @@ def process_frame(frame, width, height):
 def main(args):
     n_class = 80
     color = (255, 0, 0)
-    weights = "./weights/yolov3.tf"
+
     font = cv2.FONT_HERSHEY_SIMPLEX
-    coco_names = [l.strip() for l in open(FLAGS.class_names)]
+    coco_names = [label.strip() for label in open(FLAGS.class_names)]
     input_shape = [416, 416, 3]
 
     yolo = yolo_v3(input_shape, n_class)
-    yolo.load_weights(weights)
+    yolo.load_weights(FLAGS.weights_path)
 
     cap = cv2.VideoCapture(FLAGS.video_file)
 

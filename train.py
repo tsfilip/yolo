@@ -10,8 +10,8 @@ from absl import flags
 from functools import partial
 
 FLAGS = flags.FLAGS
-flags.DEFINE_string("train_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/train/", "Path to training directory")  #TODO none
-flags.DEFINE_string("test_dir", "/media/tom/HDD-HARD-DISK-1/datasets/object_detection/test/", "Path to test directory")
+flags.DEFINE_string("train_dir", None, "Path to training directory")
+flags.DEFINE_string("test_dir", None, "Path to test directory")
 flags.DEFINE_string("logging_dir", "./logs", "Path to log directory for tensorboard and checkpoints")
 flags.DEFINE_string("checkpoint", "./ckpt", "Path to checkpoint directory")
 flags.DEFINE_integer("width", 256, "Images width")
